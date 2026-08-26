@@ -515,9 +515,14 @@ function rewriteM3u8(playlistText, baseUrl, headers) {
     return out.join('\n');
 }
 
+function proxyHost(url) {
+    try { return new URL(url).hostname; } catch (e) { return '?'; }
+}
+
 async function handleHlsPlaylistProxy(req, res) {
     const data = decodeProxyToken(req.params.token);
     if (!data) return res.status(400).send('Token inválido');
+    const host = proxyHost(data.url);
     try {
         const upstream = await axios.get(data.url, {
             headers: data.headers, timeout: 15000, responseType: 'text',
@@ -528,6 +533,8 @@ async function handleHlsPlaylistProxy(req, res) {
         res.set('Content-Type', 'application/vnd.apple.mpegurl');
         res.send(rewritten);
     } catch (e) {
+        const status = e.response ? e.response.status : 'sin respuesta';
+        console.log(`[HLS-PROXY][playlist] host=${host} status=${status} err=${e.message} url=${data.url}`);
         res.status(502).send('No se pudo obtener el playlist: ' + e.message);
     }
 }
@@ -535,6 +542,7 @@ async function handleHlsPlaylistProxy(req, res) {
 async function handleHlsSegmentProxy(req, res) {
     const data = decodeProxyToken(req.params.token);
     if (!data) return res.status(400).send('Token inválido');
+    const host = proxyHost(data.url);
     try {
         const upstream = await axios.get(data.url, {
             headers: data.headers, timeout: 20000, responseType: 'stream'
@@ -543,6 +551,8 @@ async function handleHlsSegmentProxy(req, res) {
         if (upstream.headers['content-type']) res.set('Content-Type', upstream.headers['content-type']);
         upstream.data.pipe(res);
     } catch (e) {
+        const status = e.response ? e.response.status : 'sin respuesta';
+        console.log(`[HLS-PROXY][segment] host=${host} status=${status} err=${e.message} url=${data.url}`);
         res.status(502).send('No se pudo obtener el segmento');
     }
 }
