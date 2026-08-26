@@ -473,21 +473,31 @@ function proxyHost(url) {
     try { return new URL(url).hostname; } catch (e) { return '?'; }
 }
 
+function fetchWithHardTimeout(url, opts, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`hard-timeout tras ${ms}ms`)), ms);
+    return axios.get(url, { ...opts, signal: controller.signal })
+        .finally(() => clearTimeout(timer));
+}
+
 async function handleHlsPlaylistProxy(req, res) {
     const data = decodeProxyToken(req.params.token);
     if (!data) return res.status(400).send('Token inválido');
+    const host = proxyHost(data.url);
+    console.log(`[HLS-PROXY][playlist] pidiendo host=${host}`);
     try {
-        const upstream = await axios.get(data.url, {
-            headers: data.headers, timeout: 15000, responseType: 'text',
+        const upstream = await fetchWithHardTimeout(data.url, {
+            headers: data.headers, responseType: 'text',
             transformResponse: [(d) => d]
-        });
+        }, 12000);
+        console.log(`[HLS-PROXY][playlist] OK host=${host} status=${upstream.status}`);
         const rewritten = rewriteM3u8(upstream.data, data.url, data.headers);
         res.set('Access-Control-Allow-Origin', '*');
         res.set('Content-Type', 'application/vnd.apple.mpegurl');
         res.send(rewritten);
     } catch (e) {
         const status = e.response ? e.response.status : 'sin respuesta';
-        console.log(`[HLS-PROXY][playlist] host=${proxyHost(data.url)} status=${status} err=${e.message}`);
+        console.log(`[HLS-PROXY][playlist] FALLO host=${host} status=${status} err=${e.message}`);
         res.status(502).send('No se pudo obtener el playlist: ' + e.message);
     }
 }
@@ -495,16 +505,17 @@ async function handleHlsPlaylistProxy(req, res) {
 async function handleHlsSegmentProxy(req, res) {
     const data = decodeProxyToken(req.params.token);
     if (!data) return res.status(400).send('Token inválido');
+    const host = proxyHost(data.url);
     try {
-        const upstream = await axios.get(data.url, {
-            headers: data.headers, timeout: 20000, responseType: 'stream'
-        });
+        const upstream = await fetchWithHardTimeout(data.url, {
+            headers: data.headers, responseType: 'stream'
+        }, 15000);
         res.set('Access-Control-Allow-Origin', '*');
         if (upstream.headers['content-type']) res.set('Content-Type', upstream.headers['content-type']);
         upstream.data.pipe(res);
     } catch (e) {
         const status = e.response ? e.response.status : 'sin respuesta';
-        console.log(`[HLS-PROXY][segment] host=${proxyHost(data.url)} status=${status} err=${e.message}`);
+        console.log(`[HLS-PROXY][segment] FALLO host=${host} status=${status} err=${e.message}`);
         res.status(502).send('No se pudo obtener el segmento');
     }
 }
