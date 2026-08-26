@@ -15,13 +15,6 @@ function buildVidUrl(imdbId, season, episode) {
     return `${BASE}/vidurl/${imdbId}/`;
 }
 
-// ==========================================
-// 1) DESCIFRADO: Proof-of-Work + AES-CBC
-// ==========================================
-// El PoW (SHA-256 con dificultad N ceros al inicio) y el descifrado AES son
-// operaciones estándar -- no hace falta un navegador real, se resuelven acá
-// mismo en el servidor, mucho más rápido que con Puppeteer.
-
 function solvePow(challenge, difficulty) {
     const prefix = '0'.repeat(difficulty);
     let nonce = 0;
@@ -85,10 +78,6 @@ async function getDecryptedEmbeds(imdbId, season, episode) {
     }
     return results;
 }
-
-// ==========================================
-// 2) RESOLUCIÓN POR SERVIDOR (VidHide, VOE, StreamWish)
-// ==========================================
 
 function unpackEvalPacker(script) {
     const match = script.match(/eval\(function\(p,a,c,k,e,[rd]\)\{.*?\}\s*\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/);
@@ -191,7 +180,6 @@ async function resolveVoe(url) {
         let encText = Array.isArray(parsed) ? parsed[0] : parsed;
         if (typeof encText !== 'string') return null;
 
-        // ROT13
         let decoded = encText.replace(/[a-zA-Z]/g, (c) => {
             const code = c.charCodeAt(0);
             const limit = c <= 'Z' ? 90 : 122;
@@ -220,17 +208,6 @@ async function resolveVoe(url) {
         return null;
     }
 }
-
-// ==========================================
-// 2c) RESPALDO CON NAVEGADOR (Puppeteer)
-// ==========================================
-// StreamWish tiene protección anti-devtools (un debugger; en loop que pausa
-// la ejecución si hay un debugger real conectado) y a veces necesita JS real
-// para revelar el m3u8. VOE, además, pide resolver un captcha Altcha (un
-// checkbox que dispara una prueba de trabajo del lado del cliente) antes de
-// arrancar el reproductor. axios no ejecuta JS, así que ninguno de los dos
-// casos se puede resolver sin un navegador real -- lo usamos SOLO como
-// respaldo, cuando el método rápido (sin navegador) no encuentra nada.
 
 let puppeteer = null;
 try { puppeteer = require('puppeteer'); } catch (e) { /* opcional */ }
@@ -261,8 +238,6 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
         page.setDefaultTimeout(timeoutMs);
         page.setDefaultNavigationTimeout(timeoutMs);
 
-        // Diálogos JS (alert/confirm/prompt) sin atender bloquean cualquier
-        // click/evaluate posterior -- los cerramos apenas aparecen.
         page.on('dialog', async (dialog) => { try { await dialog.dismiss(); } catch (e) {} });
 
         let resolved = null;
@@ -350,10 +325,6 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
         const centerX = Math.floor(viewport.width / 2);
         const centerY = Math.floor(viewport.height / 2);
 
-        // Clic agresivo sobre la página y CADA iframe hijo, más el checkbox
-        // de Altcha (VOE) si está presente -- el widget resuelve su propia
-        // prueba de trabajo solo con que quede marcado, no hace falta
-        // resolverla nosotros.
         async function tryClickEverywhere() {
             try { await page.mouse.click(centerX, centerY); } catch (e) {}
             const selectors = [
@@ -426,17 +397,6 @@ async function resolveByServer(servername, embedUrl) {
     return null;
 }
 
-// ==========================================
-// 2b) PROXY DE HLS (m3u8 + segmentos)
-// ==========================================
-// Por qué existe esto: los master.m3u8 de estos CDN (acek-cdn.com y
-// similares) llevan un token atado a la IP/headers que lo negoció. Si le
-// entregamos esa URL cruda al reproductor (VLC, Stremio en el celular/TV),
-// la petición sale desde OTRA IP y el CDN la rechaza aunque los headers
-// estén bien puestos. Solución: nuestro propio servidor reproxea TODO
-// (m3u8 y cada segmento), siempre con la misma IP/headers, y el reproductor
-// solo habla con nosotros.
-
 function encodeProxyToken(url, headers) {
     return Buffer.from(JSON.stringify({ url, headers: headers || {} }), 'utf8').toString('base64url');
 }
@@ -454,8 +414,6 @@ function makeAbsoluteUrl(url, base) {
     return base + '/' + url;
 }
 
-// Hosts típicos de redes de publicidad que a veces se "empalman" como si
-// fueran segmentos de video reales dentro del m3u8.
 const AD_HOST_PATTERNS = [/tiktokcdn\.com$/i, /doubleclick\.net$/i, /googlesyndication\.com$/i, /^ads?\./i];
 function looksLikeAdUrl(u) {
     try {
@@ -464,10 +422,6 @@ function looksLikeAdUrl(u) {
     } catch (e) { return false; }
 }
 
-// No decidimos "sub-playlist vs segmento" por la extensión del archivo
-// (algunos sitios nombran sus sub-playlists con ".txt"), sino por la
-// etiqueta que las precede en el propio m3u8: #EXT-X-STREAM-INF siempre
-// indica que la línea siguiente es una sub-playlist.
 function isM3u8Url(u) { return /\.m3u8(\?|#|$)/i.test(u); }
 
 function rewriteM3u8(playlistText, baseUrl, headers) {
@@ -515,6 +469,10 @@ function rewriteM3u8(playlistText, baseUrl, headers) {
     return out.join('\n');
 }
 
+function proxyHost(url) {
+    try { return new URL(url).hostname; } catch (e) { return '?'; }
+}
+
 async function handleHlsPlaylistProxy(req, res) {
     const data = decodeProxyToken(req.params.token);
     if (!data) return res.status(400).send('Token inválido');
@@ -528,6 +486,8 @@ async function handleHlsPlaylistProxy(req, res) {
         res.set('Content-Type', 'application/vnd.apple.mpegurl');
         res.send(rewritten);
     } catch (e) {
+        const status = e.response ? e.response.status : 'sin respuesta';
+        console.log(`[HLS-PROXY][playlist] host=${proxyHost(data.url)} status=${status} err=${e.message}`);
         res.status(502).send('No se pudo obtener el playlist: ' + e.message);
     }
 }
@@ -543,6 +503,8 @@ async function handleHlsSegmentProxy(req, res) {
         if (upstream.headers['content-type']) res.set('Content-Type', upstream.headers['content-type']);
         upstream.data.pipe(res);
     } catch (e) {
+        const status = e.response ? e.response.status : 'sin respuesta';
+        console.log(`[HLS-PROXY][segment] host=${proxyHost(data.url)} status=${status} err=${e.message}`);
         res.status(502).send('No se pudo obtener el segmento');
     }
 }
@@ -554,10 +516,6 @@ function buildProxyPlaylistUrl(targetUrl, headers) {
 
 app.get('/hlsproxy/playlist/:token/*', handleHlsPlaylistProxy);
 app.get('/hlsproxy/segment/:token/*', handleHlsSegmentProxy);
-
-// ==========================================
-// 3) ENDPOINT DE STREAMING
-// ==========================================
 
 app.get('/manifest.json', (req, res) => {
     res.json({
@@ -585,9 +543,6 @@ app.get('/stream/:type/:idWithExt', async (req, res) => {
         const resolved = await Promise.all(embeds.map(async (e) => {
             const r = await resolveByServer(e.servername, e.embedUrl);
             if (!r) return null;
-            // No le pasamos la URL cruda del CDN al reproductor -- el token
-            // del m3u8 queda atado a la IP/headers con los que nuestro
-            // servidor lo negoció. Todo pasa por nuestro propio proxy.
             return {
                 name: `PelisPedia - ${e.servername}`,
                 title: `${e.language} - ${e.servername}`,
@@ -604,7 +559,6 @@ app.get('/stream/:type/:idWithExt', async (req, res) => {
     }
 });
 
-// --- DIAGNÓSTICO: confirmar que Puppeteer/Chromium arranca bien en este contenedor ---
 app.get('/debug/browsercheck', async (req, res) => {
     res.set('Content-Type', 'text/plain');
     if (!puppeteer) return res.status(500).send('El paquete "puppeteer" no está instalado (require falló al arrancar el server).');
@@ -621,7 +575,6 @@ app.get('/debug/browsercheck', async (req, res) => {
     }
 });
 
-// --- DIAGNÓSTICO: probar un resolver puntual con logging detallado ---
 app.get('/debug/resolve', async (req, res) => {
     const { server, url, force } = req.query;
     if (!server || !url) return res.status(400).send('Uso: /debug/resolve?server=streamwish&url=<embed>&force=browser (force es opcional)');
@@ -643,7 +596,6 @@ app.get('/debug/resolve', async (req, res) => {
     res.send(log.join('\n'));
 });
 
-// --- DIAGNÓSTICO: ver los embeds descifrados sin resolverlos ---
 app.get('/debug/embeds', async (req, res) => {
     const { imdb, season, episode } = req.query;
     if (!imdb) return res.status(400).send('Falta ?imdb=ttXXXXXXX');
@@ -656,8 +608,6 @@ app.get('/debug/embeds', async (req, res) => {
     }
 });
 
-// --- DIAGNÓSTICO: seguir la cadena completa master -> sub-playlist -> segmento ---
-// --- DIAGNÓSTICO: fetch crudo, SIN pasar por nuestro proxy/filtro ---
 app.get('/debug/rawfetch', async (req, res) => {
     const proxyUrl = req.query.url;
     if (!proxyUrl) return res.status(400).send('Falta ?url=<link completo de /hlsproxy/playlist/.../algo.m3u8>');
