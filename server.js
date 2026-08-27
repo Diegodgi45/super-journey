@@ -365,17 +365,18 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
             }
         }
 
+        // Un solo intento de click (necesario para el checkbox de Altcha de
+        // VOE y para "despertar" el player) -- ya NO reintentamos en loop
+        // cada 1.5s sobre todos los frames, porque eso consumía tiempo y
+        // créditos de más sin aportar mucho una vez pasado el primer click.
+        await tryClickEverywhere();
+
         const start = Date.now();
-        let lastClickAt = 0;
         while (Date.now() - start < timeoutMs) {
             if (resolved) {
                 if (isKnownGoodUrl(resolved.url)) break;
                 console.log(`[Puppeteer] Candidato descartado (no calza con el patrón esperado), sigo esperando: ${resolved.url}`);
                 resolved = null;
-            }
-            if (Date.now() - lastClickAt > 1500) {
-                lastClickAt = Date.now();
-                await tryClickEverywhere();
             }
             await new Promise((r) => setTimeout(r, 300));
         }
