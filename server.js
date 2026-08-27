@@ -156,7 +156,7 @@ async function resolveStreamWish(url) {
 
         return {
             url: m3u8Url,
-            headers: { Referer: new URL(url).origin + '/', Origin: new URL(url).origin, 'User-Agent': PS_UA }
+            headers: { Referer: url, Origin: new URL(url).origin, 'User-Agent': PS_UA }
         };
     } catch (e) {
         console.log('[StreamWish] Error:', e.message);
@@ -535,7 +535,7 @@ app.get('/stream/:type/:idWithExt', async (req, res) => {
         const resolved = await Promise.all(embeds.map(async (e) => {
             const r = await resolveByServer(e.servername, e.embedUrl);
             if (!r) return null;
-            console.log(`👉 [${e.servername}] Enlace a pasar al proxy: ${r.url}`);
+            console.log(`👉 [${e.servername}] Enlace a pasar al proxy: ${r.url} | Referer=${r.headers.Referer} Origin=${r.headers.Origin}`);
             return {
                 name: `PelisPedia - ${e.servername}`,
                 title: `${e.language} - ${e.servername}`,
