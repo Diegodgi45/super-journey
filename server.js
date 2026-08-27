@@ -585,6 +585,7 @@ app.get('/stream/:type/:idWithExt', async (req, res) => {
         const resolved = await Promise.all(embeds.map(async (e) => {
             const r = await resolveByServer(e.servername, e.embedUrl);
             if (!r) return null;
+            console.log(`👉 [${e.servername}] Enlace a pasar al proxy: ${r.url}`);
             // No le pasamos la URL cruda del CDN al reproductor -- el token
             // del m3u8 queda atado a la IP/headers con los que nuestro
             // servidor lo negoció. Todo pasa por nuestro propio proxy.
