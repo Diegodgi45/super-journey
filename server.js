@@ -365,42 +365,6 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
             }
         }
 
-        // Verifica que el m3u8/sub-playlist capturado tenga al menos un
-        // segmento real (no publicitario) antes de darlo por bueno -- si el
-        // embed muestra primero un video-anuncio por HLS, el listener de
-        // red puede capturar el m3u8 del anuncio en vez del contenido real.
-        async function candidateHasRealContent(candidate) {
-            try {
-                const masterResp = await axios.get(candidate.url, {
-                    headers: candidate.headers, timeout: 6000, responseType: 'text',
-                    transformResponse: [(d) => d]
-                });
-                let playlistText = String(masterResp.data);
-                const firstLine = playlistText.split(/\r?\n/).find(l => l.trim() && !l.trim().startsWith('#'));
-                if (firstLine && isM3u8Url(makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, '')))) {
-                    // Es un master que apunta a una sub-playlist -- la seguimos.
-                    const subUrl = makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, ''));
-                    const subResp = await axios.get(subUrl, {
-                        headers: candidate.headers, timeout: 6000, responseType: 'text',
-                        transformResponse: [(d) => d]
-                    });
-                    playlistText = String(subResp.data);
-                }
-                const lines = playlistText.split(/\r?\n/);
-                for (const line of lines) {
-                    const t = line.trim();
-                    if (!t || t.startsWith('#')) continue;
-                    const abs = /^https?:\/\//i.test(t) ? t : makeAbsoluteUrl(t, candidate.url.replace(/\/[^/]*$/, ''));
-                    if (!looksLikeAdUrl(abs)) return true;
-                }
-                return false;
-            } catch (e) {
-                // Si no pudimos validar, no descartamos el candidato por las
-                // dudas (mejor un intento fallido que perder un stream bueno).
-                return true;
-            }
-        }
-
         const start = Date.now();
         let lastClickAt = 0;
         while (Date.now() - start < timeoutMs) {
@@ -427,10 +391,53 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
     }
 }
 
+// Verifica que un resultado resuelto (m3u8/sub-playlist) tenga al menos un
+// segmento real (no publicitario) antes de darlo por bueno -- si el embed
+// muestra primero un video-anuncio por HLS, el resolver puede haber
+// capturado el m3u8 del anuncio en vez del contenido real.
+async function candidateHasRealContent(candidate) {
+    try {
+        const masterResp = await axios.get(candidate.url, {
+            headers: candidate.headers, timeout: 6000, responseType: 'text',
+            transformResponse: [(d) => d]
+        });
+        let playlistText = String(masterResp.data);
+        const firstLine = playlistText.split(/\r?\n/).find(l => l.trim() && !l.trim().startsWith('#'));
+        if (firstLine && isM3u8Url(makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, '')))) {
+            const subUrl = makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, ''));
+            const subResp = await axios.get(subUrl, {
+                headers: candidate.headers, timeout: 6000, responseType: 'text',
+                transformResponse: [(d) => d]
+            });
+            playlistText = String(subResp.data);
+        }
+        const lines = playlistText.split(/\r?\n/);
+        for (const line of lines) {
+            const t = line.trim();
+            if (!t || t.startsWith('#')) continue;
+            const abs = /^https?:\/\//i.test(t) ? t : makeAbsoluteUrl(t, candidate.url.replace(/\/[^/]*$/, ''));
+            if (!looksLikeAdUrl(abs)) return true;
+        }
+        return false;
+    } catch (e) {
+        // Si no pudimos validar, no descartamos el candidato por las dudas
+        // (mejor un intento fallido que perder un stream bueno).
+        return true;
+    }
+}
+
 async function resolveByServer(servername, embedUrl) {
     const name = (servername || '').toLowerCase();
 
-    if (name === 'vidhide') return resolveVidHide(embedUrl);
+    if (name === 'vidhide') {
+        const quick = await resolveVidHide(embedUrl);
+        if (quick) {
+            const ok = await candidateHasRealContent(quick);
+            if (ok) return quick;
+            console.log('[VidHide] Resultado rápido era 100% publicidad, probando con navegador (esperando el anuncio)...');
+        }
+        return resolveViaBrowser(embedUrl, 25000);
+    }
 
     if (name === 'streamwish') {
         const quick = await resolveStreamWish(embedUrl);
