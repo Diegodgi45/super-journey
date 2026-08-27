@@ -626,6 +626,42 @@ app.get('/debug/rawfetch', async (req, res) => {
     }
 });
 
+app.get('/debug/adcheck', async (req, res) => {
+    const masterUrl = req.query.url;
+    if (!masterUrl) return res.status(400).send('Falta ?url= (opcional: &referer=&origin=)');
+    res.set('Content-Type', 'text/plain');
+    const extraHeaders = { 'User-Agent': PS_UA };
+    if (req.query.referer) extraHeaders.Referer = req.query.referer;
+    if (req.query.origin) extraHeaders.Origin = req.query.origin;
+    try {
+        const masterResp = await axios.get(masterUrl, { headers: extraHeaders, timeout: 12000, responseType: 'text', transformResponse: [(d) => d] });
+        const subLineRaw = String(masterResp.data).split(/\r?\n/).find(l => l.trim() && !l.trim().startsWith('#'));
+        const subLine = makeAbsoluteUrl(subLineRaw.trim(), masterUrl.replace(/\/[^/]*$/, ''));
+        const subResp = await axios.get(subLine, { headers: extraHeaders, timeout: 12000, responseType: 'text', transformResponse: [(d) => d] });
+        const lines = String(subResp.data).split(/\r?\n/);
+        let total = 0, ads = 0;
+        const sampleReal = [];
+        const sampleAds = [];
+        for (const line of lines) {
+            const t = line.trim();
+            if (!t || t.startsWith('#')) continue;
+            const abs = /^https?:\/\//i.test(t) ? t : makeAbsoluteUrl(t, subLine.replace(/\/[^/]*$/, ''));
+            total++;
+            if (looksLikeAdUrl(abs)) { ads++; if (sampleAds.length < 3) sampleAds.push(abs); }
+            else { if (sampleReal.length < 3) sampleReal.push(abs); }
+        }
+        res.send(
+            `Total de líneas de segmento en la sub-playlist: ${total}\n` +
+            `Detectadas como publicidad (se filtrarían): ${ads}\n` +
+            `Quedarían como reales tras el filtro: ${total - ads}\n\n` +
+            `Ejemplos de "real": ${JSON.stringify(sampleReal, null, 2)}\n\n` +
+            `Ejemplos de "ad" filtrado: ${JSON.stringify(sampleAds, null, 2)}`
+        );
+    } catch (e) {
+        res.status(500).send('Error: ' + e.message);
+    }
+});
+
 app.get('/debug/fullchain', async (req, res) => {
     const masterUrl = req.query.url;
     if (!masterUrl) return res.status(400).send('Falta ?url= (opcional: &referer=&origin=)');
