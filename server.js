@@ -372,12 +372,7 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
         await tryClickEverywhere();
 
         const start = Date.now();
-        while (Date.now() - start < timeoutMs) {
-            if (resolved) {
-                if (isKnownGoodUrl(resolved.url)) break;
-                console.log(`[Puppeteer] Candidato descartado (no calza con el patrón esperado), sigo esperando: ${resolved.url}`);
-                resolved = null;
-            }
+        while (!resolved && Date.now() - start < timeoutMs) {
             await new Promise((r) => setTimeout(r, 300));
         }
 
