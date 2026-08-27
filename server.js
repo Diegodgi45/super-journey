@@ -365,49 +365,12 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
             }
         }
 
-        // Verifica que el m3u8/sub-playlist capturado tenga al menos un
-        // segmento real (no publicitario) antes de darlo por bueno -- si el
-        // embed muestra primero un video-anuncio por HLS, el listener de
-        // red puede capturar el m3u8 del anuncio en vez del contenido real.
-        async function candidateHasRealContent(candidate) {
-            try {
-                const masterResp = await axios.get(candidate.url, {
-                    headers: candidate.headers, timeout: 6000, responseType: 'text',
-                    transformResponse: [(d) => d]
-                });
-                let playlistText = String(masterResp.data);
-                const firstLine = playlistText.split(/\r?\n/).find(l => l.trim() && !l.trim().startsWith('#'));
-                if (firstLine && isM3u8Url(makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, '')))) {
-                    // Es un master que apunta a una sub-playlist -- la seguimos.
-                    const subUrl = makeAbsoluteUrl(firstLine.trim(), candidate.url.replace(/\/[^/]*$/, ''));
-                    const subResp = await axios.get(subUrl, {
-                        headers: candidate.headers, timeout: 6000, responseType: 'text',
-                        transformResponse: [(d) => d]
-                    });
-                    playlistText = String(subResp.data);
-                }
-                const lines = playlistText.split(/\r?\n/);
-                for (const line of lines) {
-                    const t = line.trim();
-                    if (!t || t.startsWith('#')) continue;
-                    const abs = /^https?:\/\//i.test(t) ? t : makeAbsoluteUrl(t, candidate.url.replace(/\/[^/]*$/, ''));
-                    if (!looksLikeAdUrl(abs)) return true;
-                }
-                return false;
-            } catch (e) {
-                // Si no pudimos validar, no descartamos el candidato por las
-                // dudas (mejor un intento fallido que perder un stream bueno).
-                return true;
-            }
-        }
-
         const start = Date.now();
         let lastClickAt = 0;
         while (Date.now() - start < timeoutMs) {
             if (resolved) {
-                const ok = await candidateHasRealContent(resolved);
-                if (ok) break;
-                console.log(`[Puppeteer] Candidato descartado por ser 100% publicidad, sigo esperando: ${resolved.url}`);
+                if (isKnownGoodUrl(resolved.url)) break;
+                console.log(`[Puppeteer] Candidato descartado (no calza con el patrón esperado), sigo esperando: ${resolved.url}`);
                 resolved = null;
             }
             if (Date.now() - lastClickAt > 1500) {
@@ -427,22 +390,48 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
     }
 }
 
+// Formas de URL "buenas" conocidas, una por servidor, sacadas de casos que
+// funcionaron perfecto. Si el link resuelto no calza con ninguna de estas
+// formas (o con algo muy similar), lo descartamos al toque -- sin gastar
+// tiempo/créditos validándolo contra el CDN real. Esto reemplaza la
+// validación por red que hacíamos antes.
+const GOOD_URL_PATTERNS = [
+    // VidHide: https://XXXX.acek-cdn.com/hls2/01/NNNNN/ID_n/master.m3u8?t=...&s=...&e=...&f=...&srv=...&asn=...
+    /^https?:\/\/[^/]*\.acek-cdn\.com\/.*master\.m3u8\?t=.*&s=.*&e=/i,
+    // StreamWish (variante .txt): https://XXXX.dominio/.../hls3/01/NNNNN/ID_,l,n,h,.urlset/master.txt
+    /\.urlset\/master\.(txt|m3u8)(\?|$)/i,
+    // VOE: https://ugc-cdn-caching-XXXX.cloudwindow-route.com/engine/hls2.../master.m3u8?t=...&s=...
+    /^https?:\/\/ugc-cdn-caching-[^.]+\.cloudwindow-route\.com\/.*master\.m3u8\?t=.*&s=/i
+];
+
+function isKnownGoodUrl(u) {
+    if (!u) return false;
+    return GOOD_URL_PATTERNS.some((rx) => rx.test(u));
+}
+
 async function resolveByServer(servername, embedUrl) {
     const name = (servername || '').toLowerCase();
 
-    if (name === 'vidhide') return resolveVidHide(embedUrl);
+    if (name === 'vidhide') {
+        const quick = await resolveVidHide(embedUrl);
+        if (quick && isKnownGoodUrl(quick.url)) return quick;
+        if (quick) console.log(`[VidHide] Resultado rápido no calza con el patrón esperado, descartado: ${quick.url}`);
+        return resolveViaBrowser(embedUrl);
+    }
 
     if (name === 'streamwish') {
         const quick = await resolveStreamWish(embedUrl);
-        if (quick) return quick;
-        console.log('[StreamWish] Método rápido no encontró nada, probando con navegador...');
+        if (quick && isKnownGoodUrl(quick.url)) return quick;
+        if (quick) console.log(`[StreamWish] Resultado rápido no calza con el patrón esperado, descartado: ${quick.url}`);
+        else console.log('[StreamWish] Método rápido no encontró nada, probando con navegador...');
         return resolveViaBrowser(embedUrl);
     }
 
     if (name === 'voe') {
         const quick = await resolveVoe(embedUrl);
-        if (quick) return quick;
-        console.log('[VOE] Método rápido no encontró nada, probando con navegador (Altcha)...');
+        if (quick && isKnownGoodUrl(quick.url)) return quick;
+        if (quick) console.log(`[VOE] Resultado rápido no calza con el patrón esperado, descartado: ${quick.url}`);
+        else console.log('[VOE] Método rápido no encontró nada, probando con navegador (Altcha)...');
         return resolveViaBrowser(embedUrl);
     }
 
