@@ -686,17 +686,22 @@ app.get('/debug/rawfetch', async (req, res) => {
 
 app.get('/debug/fullchain', async (req, res) => {
     const masterUrl = req.query.url;
-    if (!masterUrl) return res.status(400).send('Falta ?url=');
+    if (!masterUrl) return res.status(400).send('Falta ?url= (opcional: &referer=&origin=)');
     res.set('Content-Type', 'text/plain');
     const log = [];
     const t0 = Date.now();
     const p = (msg) => log.push(`[${Date.now() - t0}ms] ${msg}`);
 
+    const extraHeaders = { 'User-Agent': PS_UA };
+    if (req.query.referer) extraHeaders.Referer = req.query.referer;
+    if (req.query.origin) extraHeaders.Origin = req.query.origin;
+    p(`Headers usados: ${JSON.stringify(extraHeaders)}`);
+
     async function fetchText(u) {
-        return axios.get(u, { timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
+        return axios.get(u, { timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true, headers: extraHeaders });
     }
     async function fetchBinary(u) {
-        return axios.get(u, { timeout: 12000, responseType: 'arraybuffer', validateStatus: () => true });
+        return axios.get(u, { timeout: 12000, responseType: 'arraybuffer', validateStatus: () => true, headers: extraHeaders });
     }
 
     try {
