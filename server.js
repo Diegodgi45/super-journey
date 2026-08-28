@@ -365,14 +365,24 @@ async function resolveViaBrowser(embedUrl, timeoutMs) {
             }
         }
 
-        // Un solo intento de click (necesario para el checkbox de Altcha de
-        // VOE y para "despertar" el player) -- ya NO reintentamos en loop
-        // cada 1.5s sobre todos los frames, porque eso consumía tiempo y
-        // créditos de más sin aportar mucho una vez pasado el primer click.
+        // Reintentamos el click unas pocas veces, bien espaciado (cada 3s,
+        // hasta 5 intentos) -- ni el loop agresivo original (cada 1.5s sobre
+        // todos los frames, que consumía de más) ni un solo intento (que
+        // resultó insuficiente para el checkbox de Altcha de VOE, que a
+        // veces tarda en aparecer o necesita un segundo intento).
         await tryClickEverywhere();
+        let clickAttempts = 1;
+        const maxClickAttempts = 5;
+        const clickIntervalMs = 3000;
 
         const start = Date.now();
+        let lastClickAt = start;
         while (!resolved && Date.now() - start < timeoutMs) {
+            if (clickAttempts < maxClickAttempts && Date.now() - lastClickAt > clickIntervalMs) {
+                lastClickAt = Date.now();
+                clickAttempts++;
+                await tryClickEverywhere();
+            }
             await new Promise((r) => setTimeout(r, 300));
         }
 
@@ -424,11 +434,11 @@ async function resolveByServer(servername, embedUrl) {
     }
 
     if (name === 'voe') {
-        const quick = await resolveVoe(embedUrl);
-        if (quick && isKnownGoodUrl(quick.url)) return quick;
-        if (quick) console.log(`[VOE] Resultado rápido no calza con el patrón esperado, descartado: ${quick.url}`);
-        else console.log('[VOE] Método rápido no encontró nada, probando con navegador (Altcha)...');
-        return resolveViaBrowser(embedUrl);
+        // VOE deshabilitado: el checkbox de Altcha nunca terminaba de
+        // resolverse, así que todos los pedidos quemaban el timeout
+        // completo de Puppeteer (~30s) en vano -- la fuente principal del
+        // consumo excesivo. Con vidhide y streamwish alcanza.
+        return null;
     }
 
     console.log(`[Resolvers] Servidor sin resolver implementado: ${servername}`);
@@ -575,35 +585,65 @@ app.get('/manifest.json', (req, res) => {
     });
 });
 
+// Stremio suele reintentar automáticamente si un pedido de stream tarda
+// mucho en responder -- eso dispara TODO el pipeline de nuevo (incluyendo
+// otro navegador Puppeteer), duplicando el trabajo y compitiendo por los
+// mismos recursos, lo cual paradójicamente hace que todo tarde AÚN MÁS. Para
+// cortar eso: si llega un pedido idéntico (mismo type+id) mientras ya hay
+// uno igual en curso, esperamos el MISMO resultado en vez de arrancar todo
+// de nuevo desde cero.
+const inFlightRequests = new Map();
+
 app.get('/stream/:type/:idWithExt', async (req, res) => {
-    const t0 = Date.now();
+    const id = req.params.idWithExt.replace(/\.json$/, '');
+    const requestKey = `${req.params.type}:${id}`;
+
+    if (inFlightRequests.has(requestKey)) {
+        console.log(`Pedido duplicado detectado para ${requestKey} -- reusando la resolución en curso en vez de arrancar otra.`);
+        try {
+            const streams = await inFlightRequests.get(requestKey);
+            return res.json({ streams });
+        } catch (e) {
+            return res.json({ streams: [] });
+        }
+    }
+
+    const resultPromise = resolveStreamsFor(req.params.type, id);
+    inFlightRequests.set(requestKey, resultPromise);
     try {
-        const id = req.params.idWithExt.replace(/\.json$/, '');
-        const [imdbId, season, episode] = id.split(':');
-        console.log(`--- Pedido: ${req.params.type} ${id} ---`);
-
-        const embeds = await getDecryptedEmbeds(imdbId, season, episode);
-        console.log(`[${Date.now() - t0}ms] Embeds descifrados: ${embeds.length} (${embeds.map(e => e.servername).join(', ')})`);
-
-        const resolved = await Promise.all(embeds.map(async (e) => {
-            const r = await resolveByServer(e.servername, e.embedUrl);
-            if (!r) return null;
-            console.log(`👉 [${e.servername}] Enlace a pasar al proxy: ${r.url} | Referer=${r.headers.Referer} Origin=${r.headers.Origin}`);
-            return {
-                name: `PelisPedia - ${e.servername}`,
-                title: `${e.language} - ${e.servername}`,
-                url: buildProxyPlaylistUrl(r.url, r.headers)
-            };
-        }));
-
-        const streams = resolved.filter(Boolean);
-        console.log(`[${Date.now() - t0}ms] Streams resueltos: ${streams.length} (tiempo total de esta respuesta)`);
+        const streams = await resultPromise;
         res.json({ streams });
     } catch (e) {
         console.log('Error en /stream:', e.message);
         res.json({ streams: [] });
+    } finally {
+        inFlightRequests.delete(requestKey);
     }
 });
+
+async function resolveStreamsFor(type, id) {
+    const t0 = Date.now();
+    const [imdbId, season, episode] = id.split(':');
+    console.log(`--- Pedido: ${type} ${id} ---`);
+
+    const embeds = await getDecryptedEmbeds(imdbId, season, episode);
+    console.log(`[${Date.now() - t0}ms] Embeds descifrados: ${embeds.length} (${embeds.map(e => e.servername).join(', ')})`);
+
+    const resolved = await Promise.all(embeds.map(async (e) => {
+        const r = await resolveByServer(e.servername, e.embedUrl);
+        if (!r) return null;
+        console.log(`👉 [${e.servername}] Enlace a pasar al proxy: ${r.url} | Referer=${r.headers.Referer} Origin=${r.headers.Origin}`);
+        return {
+            name: `PelisPedia - ${e.servername}`,
+            title: `${e.language} - ${e.servername}`,
+            url: buildProxyPlaylistUrl(r.url, r.headers)
+        };
+    }));
+
+    const streams = resolved.filter(Boolean);
+    console.log(`[${Date.now() - t0}ms] Streams resueltos: ${streams.length} (tiempo total de esta respuesta)`);
+    return streams;
+}
 
 app.get('/debug/browsercheck', async (req, res) => {
     res.set('Content-Type', 'text/plain');
